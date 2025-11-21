@@ -40,7 +40,7 @@ class Produit extends Model
     }
 
     /**
-     * Met à jour le produit courant.
+     * Met à jour le produit courant.larave
      * Utilise fill() puis save() pour garantir que tous les champs sont mis à jour.
      */
     public function updateProduit(array $payload): self
