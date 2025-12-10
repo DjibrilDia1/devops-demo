@@ -1,0 +1,171 @@
+name: Deploy Laravel to Windows Server
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: mbstring, pdo, pdo_mysql, openssl
+          tools: composer
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v3
+        with:
+          path: vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Build frontend assets
+        run: |
+          npm ci
+          npm run build
+
+      - name: Prepare deployment package
+        run: |
+          mkdir -p release
+          # Copy application files (exclude unnecessary dirs)
+          rsync -av --delete \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='storage/logs/*' \
+            --exclude='.github' \
+            --exclude='tests' \
+            . release/
+          
+          # Copy vendor files
+          cp -r vendor release/
+          
+          # Create required directories
+          mkdir -p release/storage/logs
+          mkdir -p release/bootstrap/cache
+
+      - name: Create deployment archive
+        run: |
+          cd release
+          tar -czf ../laravel-build.tar.gz .
+          cd ..
+
+      - name: Deploy to Windows Server via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script_stop: true
+          script: |
+            # Define paths
+            $staging = "C:\apps\mon-laravel-staging"
+            $live = "C:\apps\mon-laravel-live"
+            $backups = "C:\apps\backups"
+            
+            # Create backup directory if not exists
+            if (-not (Test-Path $backups)) {
+              New-Item -ItemType Directory -Path $backups -Force | Out-Null
+            }
+            
+            # Clean staging directory
+            if (Test-Path $staging) {
+              Remove-Item $staging -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $staging -Force | Out-Null
+            
+            Write-Host "Deployment completed successfully!"
+
+      - name: Transfer files via SCP
+        run: |
+          # Install SSH client
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Transfer archive
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            laravel-build.tar.gz \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/laravel-build.tar.gz
+
+      - name: Extract and setup on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            $staging = "C:\apps\mon-laravel-staging"
+            $live = "C:\apps\mon-laravel-live"
+            $backups = "C:\apps\backups"
+            
+            # Clean staging
+            if (Test-Path $staging) {
+              Remove-Item $staging -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $staging -Force | Out-Null
+            
+            # Extract archive
+            tar -xzf /tmp/laravel-build.tar.gz -C $staging
+            
+            # Copy .env from live (if exists)
+            if ((Test-Path "$live\.env") -and -not (Test-Path "$staging\.env")) {
+              Copy-Item "$live\.env" "$staging\.env"
+            }
+            
+            # Set permissions
+            icacls $staging /grant "supdeco_user:(F)" /T /C | Out-Null
+
+      - name: Run migrations and cache
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            $staging = "C:\apps\mon-laravel-staging"
+            
+            cd $staging
+            
+            # Run Laravel commands
+            php artisan migrate --force
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+            
+            Write-Host "Migrations and cache completed!"
+
+      - name: Swap directories (live deployment)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            $staging = "C:\apps\mon-laravel-staging"
+            $live = "C:\apps\mon-laravel-live"
+            $backups = "C:\apps\backups"
+            
+            # Create backup of current live version
+            if (Test-Path $live) {
+              $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+              $backup = "$backups\laravel-live_backup_$timestamp"
+              Copy-Item $live $backup -Recurse -Force
+              Remove-Item $live -Recurse -Force
+            }
