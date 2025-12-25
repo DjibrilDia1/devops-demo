@@ -1,0 +1,88 @@
+name: CI Backend - Laravel
+
+on:
+  push:
+    branches: ["main", "develop"]
+    paths:
+      - "devops-demo-API/**"
+  pull_request:
+    branches: ["main", "develop"]
+    paths:
+      - "devops-demo-API/**"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: devops-demo-API
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: laravel_test
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+        ports:
+          - 3306:3306
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, pdo_mysql
+          coverage: none
+
+      - name: Installer dépendances PHP
+        run: composer install --no-progress --prefer-dist --optimize-autoloader
+
+      - name: Copier .env.example → .env
+        run: cp .env.example .env
+
+      - name: Génération APP_KEY
+        run: php artisan key:generate
+
+      - name: Attendre MySQL
+        run: |
+          for i in {1..30}; do
+            if mysqladmin ping -h"127.0.0.1" -P"3306" -u"root" -p"root" --silent 2>/dev/null; then
+              echo "✓ MySQL est prêt"
+              exit 0
+            fi
+            echo "⏳ Attente MySQL... ($i/30)"
+            sleep 1
+          done
+          exit 1
+
+      - name: Lancer les migrations
+        run: php artisan migrate --force
+        env:
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: laravel_test
+          DB_USERNAME: root
+          DB_PASSWORD: root
+
+      - name: Exécuter tests PHPUnit
+        run: php artisan test --without-tty
+        env:
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: laravel_test
+          DB_USERNAME: root
+          DB_PASSWORD: root
+
+      - name: Analyse code (Laravel Pint)
+        run: ./vendor/bin/pint --test
+        continue-on-error: true
