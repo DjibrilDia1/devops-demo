@@ -1,14 +1,21 @@
-name: CI - Test & Build Laravel
+name: CI Backend - Laravel
 
 on:
   push:
     branches: ["main", "develop"]
+    paths:
+      - "devops-demo-API/**"
   pull_request:
     branches: ["main", "develop"]
+    paths:
+      - "devops-demo-API/**"
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: devops-demo-API
 
     services:
       mysql:
@@ -25,11 +32,9 @@ jobs:
           - 3306:3306
 
     steps:
-      # Étape 1 — Récupération du code du repository
       - name: Checkout du code
         uses: actions/checkout@v4
 
-      # Étape 2 — Installer PHP + extensions nécessaires
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -37,27 +42,27 @@ jobs:
           extensions: mbstring, intl, pdo_mysql
           coverage: none
 
-      # Étape 3 — Installation des dépendances Composer
       - name: Installer dépendances PHP
         run: composer install --no-progress --prefer-dist --optimize-autoloader
 
-      # Étape 4 — Créer .env pour les tests
       - name: Copier .env.example → .env
         run: cp .env.example .env
 
-      # Étape 5 — Générer APP_KEY
       - name: Génération APP_KEY
         run: php artisan key:generate
 
-      # Étape 6 — Attendre que MySQL soit prêt
       - name: Attendre MySQL
         run: |
-          while ! mysqladmin ping -h"127.0.0.1" -P"3306" -u"root" -p"root" --silent; do
-            echo "Attente de MySQL..."
-            sleep 2
+          for i in {1..30}; do
+            if mysqladmin ping -h"127.0.0.1" -P"3306" -u"root" -p"root" --silent 2>/dev/null; then
+              echo "✓ MySQL est prêt"
+              exit 0
+            fi
+            echo "⏳ Attente MySQL... ($i/30)"
+            sleep 1
           done
+          exit 1
 
-      # Étape 7 — Migrations de la base de données
       - name: Lancer les migrations
         run: php artisan migrate --force
         env:
@@ -68,7 +73,6 @@ jobs:
           DB_USERNAME: root
           DB_PASSWORD: root
 
-      # Étape 8 — Lancer les tests PHPUnit
       - name: Exécuter tests PHPUnit
         run: php artisan test --without-tty
         env:
@@ -79,7 +83,6 @@ jobs:
           DB_USERNAME: root
           DB_PASSWORD: root
 
-      # (Optionnel) Étape 9 — Analyse de code via Laravel Pint
       - name: Analyse code (Laravel Pint)
         run: ./vendor/bin/pint --test
         continue-on-error: true
